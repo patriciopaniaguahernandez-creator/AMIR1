@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <meta name="theme-color" content="#2563eb"/>
+    <link rel="manifest" href="manifest.webmanifest">
+    <title>AMIR — Administración de Inmuebles</title>
+    <!-- Tailwind via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React 18 + Babel (para poder pegar JSX sin build) -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      .card { border-radius: 1rem; border: 1px solid rgba(0,0,0,.06); background: #fff; }
+      .btnP { background:#2563eb; color:#fff; border-radius:1rem; padding:.5rem .9rem; }
+      .btnP:hover{ background:#1d4ed8; }
+      .btnS { background:#eef6ff; color:#1d4ed8; border:1px solid #bfdbfe; border-radius:1rem; padding:.5rem .9rem; }
+      .chip { background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe; border-radius:.75rem; padding:.125rem .5rem; font-size:.75rem }
+      .ok { background:#d1fae5; color:#065f46; }
+      .warn { background:#fef3c7; color:#92400e; }
+      .muted { background:#f3f4f6; color:#374151; }
+      .table { width:100%; font-size:.875rem }
+      .table th { text-align:left; font-weight:600; color:#475569; padding:.5rem .5rem }
+      .table td { padding:.5rem .5rem; color:#334155 }
+      .grid2{ display:grid; grid-template-columns: 1fr 1fr; gap:1rem }
+      .grid3{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap:1rem }
+      .roundedxl{ border-radius: 1rem }
+    </style>
+  </head>
+  <body class="min-h-screen bg-gradient-to-b from-white via-blue-50 to-white text-slate-800">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useEffect, useMemo, useState } = React;
+
+      // ---------- Utils ----------
+      const mxn = v => (new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).format(v||0));
+      const todayISO = () => new Date().toISOString().slice(0,10);
+      const capFirst = s => s ? s.charAt(0).toUpperCase()+s.slice(1) : s;
+      const mesLabel = (d=new Date()) => capFirst(d.toLocaleDateString('es-MX',{month:'long',year:'numeric'}));
+      const initials = name => (name||"").trim().split(" ").filter(Boolean).slice(0,2).map(w=>w[0]?.toUpperCase()||"").join("");
+
+      const M2I = {"enero":0,"febrero":1,"marzo":2,"abril":3,"mayo":4,"junio":5,"julio":6,"agosto":7,"septiembre":8,"setiembre":8,"octubre":9,"noviembre":10,"diciembre":11};
+      function parseMesLabel(s){
+        if(!s) return null; const parts = s.trim().toLowerCase().split(/\s+/);
+        if(parts.length<2) return null; const m = M2I[parts[0]]; const y = parseInt(parts[1],10);
+        if(m==null || isNaN(y)) return null; return new Date(y,m,1);
+      }
+
+      // CSV
+      function escapeCSVField(val){
+        const s = String(val ?? "");
+        const needsQuote = /[",\n]/.test(s);
+        const escaped = s.replace(/"/g,'""');
+        return needsQuote ? `"${escaped}"` : s;
+      }
+      function buildRecibosCSV(recibos){
+        const header = "folio,depto,nombre,mes,cuota,interes,fondo,total,pagado";
+        const lines = recibos.map(r => [
+          r.folio, escapeCSVField(r.depto), escapeCSVField(r.nombre),
+          escapeCSVField(r.mes), r.cuota, r.interes, r.fondo, r.total, r.pagado
+        ].join(","));
+        return [header, ...lines].join("\n");
+      }
+
+      // localStorage hook
+      function useLocalState(key, initial){
+        const [v,setV] = useState(()=>{ try{ const raw = localStorage.getItem(key); return raw? JSON.parse(raw) : initial; }catch{ return initial }});
+        useEffect(()=>{ try{ localStorage.setItem(key, JSON.stringify(v)); }catch{} },[key,v]);
+        return [v,setV];
+      }
+
+      // Semilla
+      const seed = {
+        edificios: [
+          { nombre: "Eugenia 79", deptos: ["101","102","103","201","202","203"] },
+          { nombre: "Matías Romero 1112", deptos: Array.from({length:42}, (_,i)=> String(101+i)) },
+          { nombre: "Eugenia 719", deptos: Array.from({length:9}, (_,i)=> String(101+i)) },
+          { nombre: "Local comercial", deptos: ["LC-1"] }
+        ],
+        recibos: [
+          { folio: 811, edificio: "Eugenia 79", depto: "101", nombre:"María López", mes:"Septiembre 2025", cuota:2100, interes:0, fondo:0, total:2100, pagado:false },
+          { folio: 812, edificio: "Eugenia 79", depto: "102", nombre:"Jorge Ruiz", mes:"Septiembre 2025", cuota:2100, interes:0, fondo:0, total:2100, pagado:true },
+          { folio: 813, edificio: "Eugenia 79", depto: "101", nombre:"María López", mes:"Octubre 2025", cuota:2100, interes:0, fondo:0, total:2100, pagado:false },
+          { folio: 901, edificio: "Matías Romero 1112", depto: "201", nombre:"Ana García", mes:"Octubre 2025", cuota:1950, interes:0, fondo:0, total:1950, pagado:true },
+        ],
+        servicios: [
+          { id:1, titulo:"Revisión de fuga de agua", prioridad:"Alta", cliente:"Depto 302", estado:"Cerrado", fecha: todayISO() },
+          { id:2, titulo:"Mantenimiento CCTV", prioridad:"Media", cliente:"Administración", estado:"En proceso", fecha: todayISO() },
+        ],
+        avisos: [
+          { id:1, titulo:"Fumigación realizada", cuerpo:"Se completó la fumigación en áreas comunes.", fecha: todayISO(), visible:true },
+          { id:2, titulo:"Pulido de pisos mañana", cuerpo:"Se solicita despejar pasillos.", fecha: todayISO(), visible:true },
+        ],
+        contactos: [
+          { id:1, nombre:"Administración", tel:"55 3371 0441", tipo:"Atención" },
+          { id:2, nombre:"Comandante Alceda (Radio)", tel:"55 1767 5608", tipo:"Difusión" },
+        ]
+      };
+
+      // Perfil por depto
+      function usePerfil(depto){
+        const [perfiles,setPerfiles] = useLocalState("app.perfiles",{});
+        const perfil = perfiles[depto] || { nombre:"" };
+        const setPerfil = p => setPerfiles({...perfiles, [depto]: p});
+        return [perfil,setPerfil];
+      }
+
+      // ---------- App ----------
+      function App(){
+        const [recibos,setRecibos] = useLocalState("app.recibos", seed.recibos);
+        const [servicios,setServicios] = useLocalState("app.servicios", seed.servicios);
+        const [avisos,setAvisos] = useLocalState("app.avisos", seed.avisos);
+        const [contactos] = useLocalState("app.contactos", seed.contactos);
+        const [edificios,setEdificios] = useLocalState("app.edificios", seed.edificios);
+        const [selEdificio,setSelEdificio] = useLocalState("app.selEdificio", seed.edificios[0].nombre);
+        const [rol,setRol] = useLocalState("app.rol","condomino");
+        const [miDepto,setMiDepto] = useLocalState("app.miDepto", seed.recibos[0].depto);
+        const [tab,setTab] = useState("dashboard");
+
+        const kpis = useMemo(()=>{
+          const totalMes = recibos.reduce((a,r)=>a+r.total,0);
+          const cobrados = recibos.filter(r=>r.pagado).reduce((a,r)=>a+r.total,0);
+          const moras = totalMes - cobrados;
+          return { totalMes, cobrados, moras, abiertos: servicios.filter(s=>s.estado!=="Cerrado").length };
+        },[recibos,servicios]);
+
+        const recibosMiDepto = useMemo(()=> recibos.filter(r=>r.depto===miDepto), [recibos,miDepto]);
+
+        return (
+          <div>
+            <header className="sticky top-0 z-10 backdrop-blur bg-white/90 border-b border-blue-100">
+              <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 rounded-2xl bg-blue-600/10 flex items-center justify-center border border-blue-300">
+                    <span className="text-blue-700 font-black">A</span>
+                  </div>
+                  <div>
+                    <h1 className="text-lg font-semibold">AMIR — Administración de Inmuebles</h1>
+                    <p className="text-xs text-slate-500">Modos: Administrador y Condómino</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  {rol==="condomino" && (
+                    <>
+                      <select className="roundedxl border border-blue-200 bg-white px-3 py-2"
+                              value={miDepto} onChange={e=>setMiDepto(e.target.value)}>
+                        {[...new Set(recibos.map(r=>r.depto))].sort().map(d=> <option key={d} value={d}>Depto {d}</option>)}
+                      </select>
+                    </>
+                  )}
+                  <select className="roundedxl border border-blue-200 bg-white px-3 py-2"
+                          value={rol} onChange={e=>setRol(e.target.value)}>
+                    <option value="admin">Administrador</option>
+                    <option value="condomino">Condómino</option>
+                  </select>
+                </div>
+              </div>
+            </header>
+
+            <main className="max-w-6xl mx-auto px-4 py-6">
+              {rol==="admin" ? (
+                <AdminUI
+                  tab={tab} setTab={setTab}
+                  kpis={kpis}
+                  recibos={recibos} setRecibos={setRecibos}
+                  servicios={servicios} setServicios={setServicios}
+                  avisos={avisos} setAvisos={setAvisos}
+                  contactos={contactos}
+                  edificios={edificios} setEdificios={setEdificios}
+                  selEdificio={selEdificio} setSelEdificio={setSelEdificio}
+                />
+              ) : (
+                <ReciboCondomino
+                  depto={miDepto}
+                  recibos={recibosMiDepto}
+                  onExport={()=>{
+                    const csv=buildRecibosCSV(recibosMiDepto);
+                    const blob=new Blob([csv],{type:'text/csv'});
+                    const url=URL.createObjectURL(blob);
+                    const a=document.createElement('a'); a.href=url; a.download=`recibos_depto_${miDepto}.csv`; a.click(); URL.revokeObjectURL(url);
+                  }}
+                />
+              )}
+            </main>
+          </div>
+        );
+      }
+
+      // ---------- Admin ----------
+      function AdminUI(props){
+        const {tab,setTab,kpis,recibos,setRecibos,servicios,setServicios,avisos,setAvisos,contactos,edificios,setEdificios,selEdificio,setSelEdificio} = props;
+        const [nuevoRec, setNuevoRec] = useState({edificio: selEdificio, depto:"", nombre:"", mes: mesLabel(), cuota: 2100, interes:0, fondo:0, total:2100, pagado:false});
+
+        useEffect(()=> setNuevoRec(r=>({...r, edificio: selEdificio, depto:""})), [selEdificio]);
+
+        const deptosSel = useMemo(()=>{
+          const ed = edificios.find(e=>e.nombre===selEdificio);
+          return ed? ed.deptos : [];
+        },[edificios,selEdificio]);
+
+        const crearRecibo = ()=>{
+          if(!nuevoRec.edificio || !nuevoRec.depto || !nuevoRec.nombre) return;
+          const folio = Math.max(0, ...recibos.map(r=>r.folio||0)) + 1;
+          setRecibos([{folio, ...nuevoRec}, ...recibos]);
+        };
+
+        return (
+          <div>
+            <div className="flex items-center gap-2 mb-5">
+              <button className={`btnS ${tab==='dashboard'?'ring-2 ring-blue-300':''}`} onClick={()=>setTab('dashboard')}>Panel</button>
+              <button className={`btnS ${tab==='recibos'?'ring-2 ring-blue-300':''}`} onClick={()=>setTab('recibos')}>Recibos</button>
+              <button className={`btnS ${tab==='servicios'?'ring-2 ring-blue-300':''}`} onClick={()=>setTab('servicios')}>Servicios</button>
+              <button className={`btnS ${tab==='avisos'?'ring-2 ring-blue-300':''}`} onClick={()=>setTab('avisos')}>Avisos</button>
+              <button className={`btnS ${tab==='contactos'?'ring-2 ring-blue-300':''}`} onClick={()=>setTab('contactos')}>Contactos</button>
+              <button className={`btnS ${tab==='edificios'?'ring-2 ring-blue-300':''}`} onClick={()=>setTab('edificios')}>🏢 Edificios</button>
+              <div className="ml-auto flex items-center gap-2">
+                <span className="text-sm text-slate-600">Edificio:</span>
+                <select className="roundedxl border border-blue-200 bg-white px-3 py-2"
+                        value={selEdificio} onChange={e=>setSelEdificio(e.target.value)}>
+                  {edificios.map(e=> <option key={e.nombre} value={e.nombre}>{e.nombre}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {tab==='dashboard' && (
+              <>
+                <div className="grid3">
+                  <div className="card p-4"><div className="text-sm text-slate-500">Ingresos del mes</div><div className="text-xl font-semibold">{mxn(kpis.totalMes)}</div></div>
+                  <div className="card p-4"><div className="text-sm text-slate-500">Cobrados</div><div className="text-xl font-semibold">{mxn(kpis.cobrados)}</div></div>
+                  <div className="card p-4"><div className="text-sm text-slate-500">En mora</div><div className="text-xl font-semibold">{mxn(kpis.moras)}</div></div>
+                </div>
+
+                <div className="grid2 mt-6">
+                  <div className="card p-4">
+                    <div className="font-semibold mb-2">Últimos recibos</div>
+                    <table className="table">
+                      <thead><tr><th>Folio</th><th>Edificio</th><th>Depto</th><th>Nombre</th><th>Mes</th><th className="text-right">Total</th><th>Estatus</th></tr></thead>
+                      <tbody>
+                        {recibos.slice(-5).reverse().map(r=>(
+                          <tr key={r.folio}>
+                            <td>{r.folio}</td><td>{r.edificio||'-'}</td><td>{r.depto}</td><td>{r.nombre}</td><td>{r.mes}</td>
+                            <td className="text-right">{mxn(r.total)}</td>
+                            <td>{r.pagado? <span className="chip ok">Pagado</span>:<span className="chip muted">Pendiente</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <TestsCard recibos={recibos} edificios={edificios}/>
+                </div>
+              </>
+            )}
+
+            {tab==='recibos' && (
+              <div className="grid2">
+                <div className="card p-4">
+                  <div className="font-semibold mb-2">Nuevo recibo</div>
+                  <div className="grid2">
+                    <div>
+                      <label className="text-sm text-slate-600">Edificio</label>
+                      <select className="w-full roundedxl border border-blue-200 bg-white px-3 py-2"
+                              value={nuevoRec.edificio} onChange={e=>setNuevoRec(r=>({...r, edificio:e.target.value, depto:""}))}>
+                        {edificios.map(e=> <option key={e.nombre} value={e.nombre}>{e.nombre}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-600">Depto</label>
+                      <select className="w-full roundedxl border border-blue-200 bg-white px-3 py-2"
+                              value={nuevoRec.depto} onChange={e=>setNuevoRec(r=>({...r, depto:e.target.value}))}>
+                        <option value="">—</option>
+                        {deptosSel.map(d=> <option key={d} value={d}>{d}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-600">Nombre</label>
+                      <input className="w-full roundedxl border border-blue-200 bg-white px-3 py-2"
+                             value={nuevoRec.nombre} onChange={e=>setNuevoRec(r=>({...r, nombre:e.target.value}))}/>
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-600">Mes</label>
+                      <input className="w-full roundedxl border border-blue-200 bg-white px-3 py-2"
+                             value={nuevoRec.mes} onChange={e=>setNuevoRec(r=>({...r, mes:e.target.value}))} placeholder="Octubre 2025"/>
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-600">Total</label>
+                      <input type="number" className="w-full roundedxl border border-blue-200 bg-white px-3 py-2"
+                             value={nuevoRec.total} onChange={e=>setNuevoRec(r=>({...r, total:+e.target.value||0}))}/>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input id="pag" type="checkbox" checked={nuevoRec.pagado} onChange={e=>setNuevoRec(r=>({...r, pagado:e.target.checked}))}/>
+                      <label htmlFor="pag" className="text-sm text-slate-600">Pagado</label>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex justify-end">
+                    <button className="btnP" onClick={crearRecibo}>Crear</button>
+                  </div>
+                </div>
+
+                <div className="card p-4">
+                  <div className="font-semibold mb-2">Recibos (filtra por edificio: {selEdificio})</div>
+                  <table className="table">
+                    <thead><tr><th>Folio</th><th>Edificio</th><th>Depto</th><th>Nombre</th><th>Mes</th><th className="text-right">Total</th><th>Estatus</th></tr></thead>
+                    <tbody>
+                      {recibos.filter(r=>!selEdificio || r.edificio===selEdificio).map(r=>(
+                        <tr key={r.folio}>
+                          <td>{r.folio}</td><td>{r.edificio||'-'}</td><td>{r.depto}</td><td>{r.nombre}</td><td>{r.mes}</td>
+                          <td className="text-right">{mxn(r.total)}</td>
+                          <td>{r.pagado? <span className="chip ok">Pagado</span>:<span className="chip muted">Pendiente</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {tab==='servicios' && <ServiciosTab servicios={servicios} setServicios={setServicios}/>}
+            {tab==='avisos' && <AvisosTab avisos={avisos} setAvisos={setAvisos}/>}
+            {tab==='contactos' && (
+              <div className="card p-4">
+                <div className="font-semibold mb-2">Contactos útiles</div>
+                <div className="grid2">
+                  {contactos.map(c=>(
+                    <div key={c.id} className="roundedxl border border-gray-200 p-3">
+                      <div className="font-medium">{c.nombre}</div>
+                      <div className="text-sm text-slate-500">{c.tipo}</div>
+                      <a className="text-blue-700 text-sm" href={`tel:${c.tel}`}>{c.tel}</a>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {tab==='edificios' && <EdificiosTab edificios={edificios} setEdificios={setEdificios} setSelEdificio={setSelEdificio}/>}
+          </div>
+        );
+      }
+
+      function TestsCard({recibos, edificios}){
+        const [results,setResults] = useState([]);
+        useEffect(()=>{
+          const out = [];
+          try{
+            const csv = buildRecibosCSV([{folio:1,depto:'101',nombre:'John',mes:'Enero 2025',cuota:1,interes:0,fondo:0,total:1,pagado:false}]);
+            out.push({name:"CSV tiene salto de línea", pass: csv.includes("\n")});
+            out.push({name:'CSV comillas escapadas', pass: escapeCSVField('"hola"') === '""hola""'});
+          }catch(e){ out.push({name:"CSV básico", pass:false, detail:String(e)}); }
+          try{ out.push({name:"Iniciales (Juan Carlos = JC)", pass: initials("Juan Carlos")==="JC"}); }catch{ out.push({name:"Iniciales", pass:false}); }
+          try{
+            const mr = edificios.find(e=>e.nombre==="Matías Romero 1112");
+            const e719 = edificios.find(e=>e.nombre==="Eugenia 719");
+            const lc = edificios.find(e=>e.nombre==="Local comercial");
+            out.push({name:"Matías Romero 1112: 42 deptos", pass: !!mr && mr.deptos.length===42, detail: mr? String(mr.deptos.length): 'no encontrado'});
+            out.push({name:"Eugenia 719: 9 deptos", pass: !!e719 && e719.deptos.length===9, detail: e719? String(e719.deptos.length): 'no encontrado'});
+            out.push({name:"Local comercial: >=1", pass: !!lc && (lc.deptos.length>=1), detail: lc? String(lc.deptos.length): 'no encontrado'});
+          }catch(e){ out.push({name:"Semillas edificios", pass:false, detail:String(e)}); }
+          setResults(out);
+        },[recibos,edificios]);
+
+        return (
+          <div className="card p-4">
+            <div className="font-semibold mb-2">Pruebas</div>
+            <div className="space-y-2">
+              {results.map((r,i)=>(
+                <div key={i} className="flex items-center gap-2 text-sm">
+                  <span className={`w-2 h-2 rounded-full ${r.pass?'bg-emerald-500':'bg-rose-500'}`}></span>
+                  <span className={r.pass? 'text-slate-700':'text-rose-700'}>{r.name}{r.detail? ` — ${r.detail}`: ''}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      }
+
+      // Condómino
+      function ReciboCondomino({depto, recibos, onExport}){
+        const [perfil,setPerfil] = usePerfil(depto);
+        const [editar,setEditar] = useState(false);
+        const actual = mesLabel();
+        const normal = s => (s||"").toLowerCase();
+        const reciboMes = useMemo(()=> recibos.find(r => normal(r.mes)===normal(actual)), [recibos,actual]);
+        const ordenados = useMemo(()=> recibos.slice().sort((a,b)=> (parseMesLabel(b.mes)?.getTime()||0)-(parseMesLabel(a.mes)?.getTime()||0) ),[recibos]);
+        const ultimo = ordenados[0];
+        const muestra = reciboMes || ultimo;
+        const nombreMostrado = (perfil?.nombre && perfil.nombre.trim()) ? perfil.nombre : (muestra?.nombre);
+        const tieneReciboMes = Boolean(reciboMes);
+        const alCorriente = reciboMes ? Boolean(reciboMes.pagado) : false;
+
+        return (
+          <div className="space-y-4">
+            <div className="card p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-xl font-semibold">Recibo — Depto {depto}</div>
+                <div className={`px-3 py-1 rounded-full text-sm ${alCorriente? 'ok':'warn'}`}>
+                  {alCorriente? `AL CORRIENTE (${actual})` : (tieneReciboMes? `PENDIENTE (${actual})` : `SIN RECIBO (${actual})`)}
+                </div>
+              </div>
+              {!((perfil?.nombre||"").trim()) && (
+                <div className="mt-3 p-3 roundedxl border border-blue-200 bg-blue-50 flex items-center justify-between text-sm">
+                  <span>Completa tu perfil para personalizar tus recibos y avisos.</span>
+                  <button className="btnS" onClick={()=>setEditar(true)}>Editar perfil</button>
+                </div>
+              )}
+
+              {muestra? (
+                <div className="space-y-3 mt-3">
+                  <div className="grid3 text-sm">
+                    <div className="flex items-center gap-2">
+                      <div className="h-6 w-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-semibold">
+                        {initials(nombreMostrado||"")}
+                      </div>
+                      <div><span className="text-slate-500">Nombre:</span> <span className="font-medium">{nombreMostrado}</span></div>
+                    </div>
+                    <div><span className="text-slate-500">Periodo:</span> <span className="font-medium">{muestra.mes || actual}</span></div>
+                    <div><span className="text-slate-500">Folio:</span> <span className="font-medium">{muestra.folio}</span></div>
+                  </div>
+
+                  <table className="table">
+                    <thead><tr><th>Concepto</th><th className="text-right">Importe</th></tr></thead>
+                    <tbody>
+                      <tr><td>Cuota</td><td className="text-right">{mxn(muestra.cuota)}</td></tr>
+                      <tr><td>Interés</td><td className="text-right">{mxn(muestra.interes)}</td></tr>
+                      <tr><td>Fondo</td><td className="text-right">{mxn(muestra.fondo)}</td></tr>
+                      <tr><td className="font-semibold">TOTAL</td><td className="text-right font-semibold">{mxn(muestra.total)}</td></tr>
+                    </tbody>
+                  </table>
+
+                  <div className="flex items-center gap-2">
+                    <span className={`chip ${muestra.pagado? 'ok':'muted'}`}>{muestra.pagado? 'Pagado':'Pendiente'}</span>
+                    <button className="btnS" onClick={onExport}>Exportar CSV</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-4 text-sm text-slate-600">No hay recibos cargados para este departamento.</div>
+              )}
+            </div>
+
+            <PerfilInline editar={editar} setEditar={setEditar} depto={depto} perfil={perfil} setPerfil={setPerfil}/>
+          </div>
+        );
+      }
+
+      function PerfilInline({editar,setEditar,depto,perfil,setPerfil}){
+        const [nombre,setNombre] = useState(perfil.nombre||"");
+        const [email,setEmail] = useState(perfil.email||"");
+        const [telefono,setTelefono] = useState(perfil.telefono||"");
+        const [aceptoAvisos,setAceptoAvisos] = useState(Boolean(perfil.aceptoAvisos));
+
+        useEffect(()=>{ setNombre(perfil.nombre||""); setEmail(perfil.email||""); setTelefono(perfil.telefono||""); setAceptoAvisos(Boolean(perfil.aceptoAvisos)); },[depto]);
+
+        if(!editar) return (
+          <div className="card p-4">
+            <div className="flex items-center justify-between">
+              <div className="font-semibold">Perfil del condómino</div>
+              <button className="btnS" onClick={()=>setEditar(true)}>Editar</button>
+            </div>
+            <div className="text-sm text-slate-600 mt-2">
+              <div><span className="text-slate-500">Nombre:</span> {perfil.nombre||"—"}</div>
+              <div><span className="text-slate-500">Email:</span> {perfil.email||"—"}</div>
+              <div><span className="text-slate-500">Teléfono:</span> {perfil.telefono||"—"}</div>
+              <div><span className="text-slate-500">Avisos:</span> {aceptoAvisos? "Sí":"No"}</div>
+            </div>
+          </div>
+        );
+
+        return (
+          <div className="card p-4">
+            <div className="font-semibold mb-2">Editar perfil</div>
+            <div className="grid2">
+              <div>
+                <label className="text-sm text-slate-600">Nombre</label>
+                <input className="w-full roundedxl border border-blue-200 bg-white px-3 py-2"
+                       value={nombre} onChange={e=>setNombre(e.target.value)} placeholder="Tu nombre"/>
+              </div>
+              <div>
+                <label className="text-sm text-slate-600">Email</label>
+                <input type="email" className="w-full roundedxl border border-blue-200 bg-white px-3 py-2"
+                       value={email} onChange={e=>setEmail(e.target.value)} placeholder="tucorreo@ejemplo.com"/>
+              </div>
+              <div>
+                <label className="text-sm text-slate-600">Teléfono</label>
+                <input className="w-full roundedxl border border-blue-200 bg-white px-3 py-2"
+                       value={telefono} onChange={e=>setTelefono(e.target.value)} placeholder="55 1234 5678"/>
+              </div>
+              <div className="flex items-center gap-2">
+                <input id="avisos" type="checkbox" checked={aceptoAvisos} onChange={e=>setAceptoAvisos(e.target.checked)}/>
+                <label htmlFor="avisos" className="text-sm text-slate-600">Aceptar recibir avisos</label>
+              </div>
+            </div>
+            <div className="mt-3 flex gap-2 justify-end">
+              <button className="btnS" onClick={()=>setEditar(false)}>Cancelar</button>
+              <button className="btnP" onClick={()=>{ setPerfil({nombre,email,telefono,aceptoAvisos}); setEditar(false); }}>Guardar</button>
+            </div>
+          </div>
+        );
+      }
+
+      // Edificios
+      function EdificiosTab({edificios,setEdificios,setSelEdificio}){
+        const [nombre,setNombre] = useState("");
+        const [deptosText,setDeptosText] = useState("");
+        const add = ()=>{
+          const nm = nombre.trim();
+          const deptos = deptosText.split(",").join(" ").split(" ").map(s=>s.trim()).filter(Boolean);
+          if(!nm) return;
+          setEdificios([...(edificios||[]), {nombre:nm, deptos}]);
+          setNombre(""); setDeptosText(""); setSelEdificio(nm);
+        };
+        const addDepto = (idx,d)=>{
+          const val = (d||"").trim(); if(!val) return;
+          const next = edificios.slice();
+          if(!next[idx].deptos.includes(val)) next[idx].deptos=[...next[idx].deptos,val];
+          setEdificios(next);
+        };
+        return (
+          <div className="space-y-6">
+            <div className="card p-4">
+              <div className="font-semibold mb-2">Agregar edificio</div>
+              <div className="grid3">
+                <div>
+                  <label className="text-sm text-slate-600">Nombre</label>
+                  <input className="w-full roundedxl border border-blue-200 bg-white px-3 py-2"
+                         value={nombre} onChange={e=>setNombre(e.target.value)} placeholder="Ej. Torre Norte"/>
+                </div>
+                <div className="col-span-2">
+                  <label className="text-sm text-slate-600">Departamentos (coma o espacios)</label>
+                  <input className="w-full roundedxl border border-blue-200 bg-white px-3 py-2"
+                         value={deptosText} onChange={e=>setDeptosText(e.target.value)} placeholder="101 102 201 202"/>
+                </div>
+              </div>
+              <div className="mt-3 flex justify-end"><button className="btnP" onClick={add}>Crear edificio</button></div>
+            </div>
+
+            <div className="grid2">
+              {edificios.map((e,idx)=>(
+                <div key={e.nombre} className="card p-4">
+                  <div className="font-semibold mb-2">{e.nombre}</div>
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {e.deptos.map(d=> <span key={d} className="chip">{d}</span>)}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input placeholder="Agregar depto" className="roundedxl border border-blue-200 bg-white px-3 py-2"
+                           onKeyDown={(ev)=>{ if(ev.key==='Enter'){ addDepto(idx, ev.target.value); ev.target.value=''; } }}/>
+                    <button className="btnS" onClick={(ev)=>{ const input = ev.currentTarget.previousSibling; addDepto(idx, input.value); input.value=''; }}>Añadir</button>
+                    <button className="btnP" onClick={()=>setSelEdificio(e.nombre)}>Usar</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      }
+
+      // Servicios
+      function ServiciosTab({servicios,setServicios}){
+        const [nuevo,setNuevo] = useState({titulo:"", prioridad:"Media", cliente:"", fecha: todayISO()});
+        const [filtro,setFiltro] = useState("");
+        const crear = ()=>{
+          const id = Math.max(0, ...servicios.map(s=>s.id||0)) + 1;
+          setServicios([{id, estado:"Abierto", ...nuevo}, ...servicios]);
+          setNuevo({titulo:"", prioridad:"Media", cliente:"", fecha: todayISO()});
+        };
+        const cambiarEstado = (id, estado) => setServicios(servicios.map(s=> s.id===id? {...s, estado}: s));
+        const visibles = useMemo(()=> filtro? servicios.filter(s=>s.estado===filtro) : servicios, [servicios,filtro]);
+
+        return (
+          <div className="grid2">
+            <div className="card p-4">
+              <div className="font-semibold mb-2">Nueva orden</div>
+              <div className="space-y-2">
+                <input className="w-full roundedxl border border-blue-200 bg-white px-3 py-2" placeholder="Título"
+                       value={nuevo.titulo} onChange={e=>setNuevo({...nuevo, titulo:e.target.value})}/>
+                <input className="w-full roundedxl border border-blue-200 bg-white px-3 py-2" placeholder="Cliente / Depto"
+                       value={nuevo.cliente} onChange={e=>setNuevo({...nuevo, cliente:e.target.value})}/>
+                <select className="w-full roundedxl border border-blue-200 bg-white px-3 py-2"
+                        value={nuevo.prioridad} onChange={e=>setNuevo({...nuevo, prioridad:e.target.value})}>
+                  <option>Alta</option><option>Media</option><option>Baja</option>
+                </select>
+                <input type="date" className="w-full roundedxl border border-blue-200 bg-white px-3 py-2"
+                       value={nuevo.fecha} onChange={e=>setNuevo({...nuevo, fecha:e.target.value})}/>
+                <button className="btnP" onClick={crear}>Crear orden</button>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <select className="roundedxl border border-blue-200 bg-white px-3 py-2" value={filtro} onChange={e=>setFiltro(e.target.value)}>
+                  <option value="">Filtrar por estado</option>
+                  <option>Abierto</option><option>En proceso</option><option>Cerrado</option>
+                </select>
+                <button className="btnS" onClick={()=>setFiltro("")}>Limpiar</button>
+              </div>
+
+              <div className="grid2">
+                {visibles.map(s=>(
+                  <div key={s.id} className="card p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="font-semibold">{s.titulo}</div>
+                      <span className={`chip ${s.prioridad==="Alta"?'warn':''}`}>{s.prioridad}</span>
+                    </div>
+                    <div className="text-sm text-slate-700 mt-2 space-y-1">
+                      <div><span className="text-slate-500">Cliente:</span> {s.cliente}</div>
+                      <div><span className="text-slate-500">Fecha:</span> {new Date(s.fecha).toLocaleDateString('es-MX')}</div>
+                      <div className="flex items-center gap-2">
+                        <span className="chip"> {s.estado} </span>
+                        <select className="roundedxl border border-blue-200 bg-white px-3 py-1"
+                                value={s.estado} onChange={e=>cambiarEstado(s.id, e.target.value)}>
+                          <option>Abierto</option><option>En proceso</option><option>Cerrado</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // Avisos
+      function AvisosTab({avisos,setAvisos}){
+        const [nuevo,setNuevo] = useState({titulo:"", cuerpo:"", visible:true});
+        const crear = ()=>{ const id = Math.max(0, ...avisos.map(a=>a.id||0)) + 1; setAvisos([{id, fecha: todayISO(), ...nuevo}, ...avisos]); setNuevo({titulo:"", cuerpo:"", visible:true}); };
+        return (
+          <div className="grid2">
+            <div className="card p-4">
+              <div className="font-semibold mb-2">Nuevo aviso</div>
+              <div className="space-y-2">
+                <input className="w-full roundedxl border border-blue-200 bg-white px-3 py-2" placeholder="Título"
+                       value={nuevo.titulo} onChange={e=>setNuevo({...nuevo, titulo:e.target.value})}/>
+                <textarea rows="5" className="w-full roundedxl border border-blue-200 bg-white px-3 py-2" placeholder="Cuerpo del aviso"
+                          value={nuevo.cuerpo} onChange={e=>setNuevo({...nuevo, cuerpo:e.target.value})}></textarea>
+                <label className="flex items-center gap-2 text-sm text-slate-600">
+                  <input type="checkbox" checked={nuevo.visible} onChange={e=>setNuevo({...nuevo, visible:e.target.checked})}/> Visible
+                </label>
+                <button className="btnP" onClick={crear}>Publicar</button>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {avisos.map(a=>(
+                <div key={a.id} className="p-4 roundedxl border border-blue-100 bg-blue-50">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold">{a.titulo}</div>
+                    <div className="flex items-center gap-2">
+                      <span className={`chip ${a.visible?'ok':'muted'}`}>{a.visible? 'Publicado':'Oculto'}</span>
+                      <span className="text-xs text-slate-500">{new Date(a.fecha).toLocaleDateString('es-MX')}</span>
+                    </div>
+                  </div>
+                  <p className="text-slate-700 mt-2 whitespace-pre-line">{a.cuerpo}</p>
+                  <div className="mt-3 flex gap-2">
+                    <button className="btnS" onClick={()=> setAvisos(avisos.map(x => x.id===a.id ? {...x, visible: !x.visible} : x))}>{a.visible ? 'Ocultar' : 'Publicar'}</button>
+                    <button className="btnS" onClick={()=> setAvisos(avisos.filter(x => x.id!==a.id))}>Eliminar</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      }
+
+      // Mount
+      ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+
+      // PWA register (en Pages funciona; en file:// no)
+      if('serviceWorker' in navigator){
+        window.addEventListener('load', ()=> navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+      }
+    </script>
+  </body>
+</html>
